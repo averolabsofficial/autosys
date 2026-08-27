@@ -21,7 +21,6 @@
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=for-the-badge)](CONTRIBUTING.md)
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen?style=for-the-badge)](https://github.com/averolabsofficial/autosys/actions)
 
-*Replace `averolabsofficial` in the badges above with your GitHub username after publishing.*
 
 > **AutoSys** grades your project's ship-readiness, catches leaked secrets before they leak, keeps versions in sync, snapshots your work like a time machine — and ships releases with one command. Built for solo devs and teams who love the terminal.
 
