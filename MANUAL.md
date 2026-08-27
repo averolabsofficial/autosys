@@ -163,7 +163,7 @@ What AutoSys uses this for:
 autosys status        # or: autosys check
 ```
 
-Runs **12 checks** and grades the repo:
+Runs **13 checks** and grades the repo:
 
 | # | Check | Fail means |
 |---|---|---|
@@ -176,9 +176,10 @@ Runs **12 checks** and grades the repo:
 | 7 | README present | No README for humans |
 | 8 | License present | No LICENSE (important for publishing) |
 | 9 | `.env` ignored | `.env` exists but isn't in `.gitignore` |
-| 10 | No TODO markers | Actionable marker annotations (keyword followed by a colon or paren) in code |
-| 11 | CI green | Failing/pending check runs (needs auth + remote) |
-| 12 | Project memory | Run `autosys init` |
+| 10 | No files >10MB | A tracked file is larger than 10MB (likely a build artifact or binary) |
+| 11 | No TODO markers | Actionable marker annotations (keyword followed by a colon or paren) in code |
+| 12 | CI green | Failing/pending check runs (needs auth + remote) |
+| 13 | Project memory | Run `autosys init` |
 
 **Grading:**
 
@@ -199,7 +200,7 @@ $ autosys status
 ┌────────────────────────────────────────────────────────────────────┐
 │ Ship-readiness report — /home/you/demo-project                     │
 └────────────────────────────────────────────────────────────────────┘
-Readiness: B (83/100 — 10/12 checks pass)
+Readiness: B (85/100 — 11/13 checks pass)
 ┌───────────────────────────┬────────┬───────────────────────────────┐
 │ Check                     │ Result │ Detail / Fix                  │
 ├───────────────────────────┼────────┼───────────────────────────────┤
@@ -212,6 +213,7 @@ Readiness: B (83/100 — 10/12 checks pass)
 │ README present            │  PASS  │                               │
 │ License present           │  FAIL  │ → Add a LICENSE file before publishing │
 │ .env ignored              │  PASS  │                               │
+│ No files >10MB            │  PASS  │                               │
 │ No TODO markers           │  PASS  │                               │
 │ CI green                  │  PASS  │ not checked (no remote/auth)  │
 │ Project memory (.autosys) │  PASS  │ demo-project                  │
@@ -221,7 +223,7 @@ Readiness: B (83/100 — 10/12 checks pass)
 └────────────────────────────────────────────┘
 ```
 
-> **Tip:** CI check (#11) only runs when you have a GitHub-style origin remote **and** are logged in. Otherwise it reports "not checked" and counts as a pass so local-only workflows aren't penalized.
+> **Tip:** CI check (#12) only runs when you have a GitHub-style origin remote **and** are logged in. Otherwise it reports "not checked" and counts as a pass so local-only workflows aren't penalized.
 
 ---
 
@@ -658,7 +660,7 @@ python autosys.py --help                 # smoke test
 - Rich `console` / `err_console` for all rendering
 - `SecureStore` — DPAPI auth storage
 - `GitHubAPI` — REST client (auth, repos, releases, check-runs)
-- `run_check()` — the 12-point status engine
+- `run_check()` — the 13-point status engine
 - `scan_secrets()` — bounded regex engine
 - `detect_version_files()` / `set_version()` — drift + bump machinery
 - `cmd_*` — one function per command, dispatched from `main()`

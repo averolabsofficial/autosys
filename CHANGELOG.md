@@ -22,7 +22,7 @@ First public release — the "it actually works everywhere" release.
 
 ### Added
 
-- **Ship-readiness report** (`status` / `check`) — 12-point audit with A–F grade, `SHIP IT` / `FIX BEFORE SHIPPING` verdict, and script-friendly exit codes.
+- **Ship-readiness report** (`status` / `check`) — 13-point audit with A–F grade, `SHIP IT` / `FIX BEFORE SHIPPING` verdict, and script-friendly exit codes.
 - **Secret scanner** (`secrets`) — 25+ secret families (AWS, GitHub/GitLab PATs, Slack, Stripe, OpenAI, JWTs, private keys, DB URLs, `.env` hygiene), file:line reporting.
 - **Version drift detection** (`drift`, `drift --fix`) — detects and aligns every version file in the project (pyproject.toml, package.json, Cargo.toml, setup.py/cfg, `__init__.py`, VERSION, package-lock.json).
 - **Checkpoints** (`checkpoint` / `checkpoints` / `restore`) — git-native project snapshots that include dirty and untracked files; branch-preserving restore.
