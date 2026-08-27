@@ -1,6 +1,6 @@
 # 📗 AutoSys — The Complete Manual
 
-**Version 2.0.1 · Your Project's Command Center**
+**Version 2.0.2 · Your Project's Command Center**
 
 > This manual covers every command, every flag, every configuration file, and every workflow AutoSys supports. Read it once, then keep it as a reference. If something is missing or confusing, open an issue — the manual is part of the project.
 
@@ -65,12 +65,10 @@ Design goals:
 | `requests` | 2.28 | GitHub API + device flow |
 | `git` | 2.20+ | Any recent version |
 
-### From source (recommended for now)
+### Via pip (recommended)
 
 ```bash
-git clone https://github.com/averolabsofficial/autosys.git
-cd autosys
-pip install -r requirements.txt   # or: pip install requests rich
+pip install autosys
 ```
 
 Make it invocable from anywhere:
@@ -89,10 +87,12 @@ chmod +x autosys
 ln -s "$(pwd)/autosys" ~/.local/bin/autosys
 ```
 
-### Via pip (once published)
+### From source (for development)
 
 ```bash
-pip install autosys
+git clone https://github.com/averolabsofficial/autosys.git
+cd autosys
+pip install -r requirements.txt   # or: pip install requests rich
 ```
 
 > **Note on the PyPI name:** `autosys` may collide with a legacy job-scheduler tool of the same name on PyPI. If the name is taken, publish under `autosys-cli` and update `[project.scripts]` in `pyproject.toml` accordingly.
@@ -101,7 +101,7 @@ pip install autosys
 
 ```bash
 autosys version
-# AutoSys 2.0.1 — YOUR PROJECT'S COMMAND CENTER
+# AutoSys 2.0.2 — YOUR PROJECT'S COMMAND CENTER
 ```
 
 ---
@@ -492,7 +492,7 @@ Run `autosys` with no arguments:
 ```
 ┌────────────────────────────────────────────────────┐
 │  █████╗ ██╗   ██╗████████╗ ██████╗ ███████╗ ...    │
-│  AutoSys v2.0.1 — YOUR PROJECT'S COMMAND CENTER    │
+│  AutoSys v2.0.2 — YOUR PROJECT'S COMMAND CENTER    │
 └────────────────────────────────────────────────────┘
   1. status      ship-readiness report
   2. commit      commit wizard
@@ -669,4 +669,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full developer guide. Tests, docs
 
 ---
 
-<p align="center"><sub>AutoSys 2.0.1 · Your Project's Command Center · MIT License</sub></p>
+<p align="center"><sub>AutoSys 2.0.2 · Your Project's Command Center · MIT License</sub></p>

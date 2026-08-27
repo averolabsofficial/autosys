@@ -134,3 +134,74 @@ def test_todo_check_flags_actionable(repo):
 
 def test_status_reports_grade_a(repo):
     assert "SHIP IT" in run_status(repo)
+
+
+# --------------------------------------------------------------------------
+# 2.0.2 quality fixes
+# --------------------------------------------------------------------------
+
+def test_version_flag_prints_version_and_exits_zero():
+    script = str(Path(__file__).resolve().parents[1] / "autosys.py")
+    r = subprocess.run([sys.executable, script, "--version"],
+                       capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert r.returncode == 0
+    assert autosys.VERSION in r.stdout
+
+
+def test_secrets_exits_nonzero_on_finding(tmp_path):
+    git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "leak.txt").write_text(
+        "aws_access_key=" + "AKIA" + "IOSFODNN7EXAMPLE\n", encoding="utf-8")
+    script = str(Path(__file__).resolve().parents[1] / "autosys.py")
+    r = subprocess.run([sys.executable, script, "secrets", "-y"],
+                       cwd=tmp_path, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert r.returncode == 1
+
+
+def test_env_ignored_check_fails_when_env_tracked(repo):
+    (repo / ".env").write_text("FOO=bar\n", encoding="utf-8")
+    git(repo, "add", ".env")
+    git(repo, "commit", "-q", "-m", "add env")
+    assert status_row(run_status(repo), ".env ignored") == "FAIL"
+
+
+def test_drift_fix_aligns_versions(repo):
+    (repo / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n',
+                                         encoding="utf-8")
+    (repo / "package.json").write_text('{"version": "1.2.4"}\n',
+                                       encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "versions")
+    script = str(Path(__file__).resolve().parents[1] / "autosys.py")
+    r = subprocess.run([sys.executable, script, "drift", "--fix"],
+                       cwd=repo, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+    pp = re.search(r'version = "([^"]+)"',
+                   (repo / "pyproject.toml").read_text(encoding="utf-8"))
+    pj = re.search(r'"version": "([^"]+)"',
+                   (repo / "package.json").read_text(encoding="utf-8"))
+    assert pp and pj, "version fields missing after drift --fix"
+    assert pp.group(1) == pj.group(1), "drift --fix did not align versions"
+
+def test_drift_yes_aligns_to_primary_without_prompt(repo):
+    (repo / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n',
+                                         encoding="utf-8")
+    (repo / "package.json").write_text('{"version": "1.2.4"}\n',
+                                       encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "versions")
+    script = str(Path(__file__).resolve().parents[1] / "autosys.py")
+    r = subprocess.run([sys.executable, script, "drift", "-y"],
+                       cwd=repo, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    assert r.returncode == 0, r.stderr
+    pp = re.search(r'version = "([^"]+)"',
+                   (repo / "pyproject.toml").read_text(encoding="utf-8"))
+    pj = re.search(r'"version": "([^"]+)"',
+                   (repo / "package.json").read_text(encoding="utf-8"))
+    assert pp and pj, "version fields missing after drift -y"
+    assert pp.group(1) == "1.2.4", "drift -y did not align to primary (package.json)"
+    assert pj.group(1) == "1.2.4", "drift -y changed the primary version"

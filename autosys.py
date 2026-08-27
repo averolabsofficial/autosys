@@ -25,6 +25,7 @@ Commands:
 
 Global flags:
   -y, --yes        accept defaults (non-interactive)
+  -V, --version    show version and exit
   -h, --help       show help
 
 OAuth note:
@@ -46,6 +47,7 @@ import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Iterator
 
 import requests
 from rich import box
@@ -57,7 +59,7 @@ from rich.table import Table
 from rich.text import Text
 
 APP_NAME = "AutoSys"
-VERSION = "2.0.1"
+VERSION = "2.0.2"
 TAGLINE = "YOUR PROJECT'S COMMAND CENTER"
 
 # GitHub OAuth (device flow). The default is GitHub CLI's public client id so
@@ -85,6 +87,10 @@ SKIP_FILES = {
 }
 MAX_SCAN_FILE = 1024 * 1024
 MAX_SCAN_FILES = 20000
+MAX_LARGE_FILE = 10 * 1024 * 1024
+BINARY_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".lock", ".pdf", ".zip", ".gz", ".woff", ".woff2",
+}
 
 # Windows console: force UTF-8 output so rich's unicode glyphs render correctly
 # (default cp1252 codepage crashes on ✓/→/⚠ and the box-drawing banner).
@@ -194,19 +200,12 @@ def info(msg: str):
     console.print(f"[cyan]{msg}[/]")
 
 
-class GitError(Exception):
-    pass
-
-
-def git(root: Path | None, *args: str, check: bool = False) -> subprocess.CompletedProcess:
+def git(root: Path | None, *args: str) -> subprocess.CompletedProcess:
     cmd = ["git"]
     if root is not None:
         cmd += ["-C", str(root)]
     cmd += list(args)
-    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if check and p.returncode != 0:
-        raise GitError((p.stderr or p.stdout).strip())
-    return p
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
 def is_git_repo(root: Path) -> bool:
@@ -244,18 +243,6 @@ def first_existing(root: Path, *names: str) -> Path | None:
         if p.exists():
             return p
     return None
-
-
-def human_dt(ts: int | float) -> str:
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
-def human_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
-        n /= 1024
-    return f"{n:.1f}TB"
 
 
 # --------------------------------------------------------------------------
@@ -451,12 +438,6 @@ class GitHubAPI:
             f"/repos/{repo}/releases",
             {"tag_name": tag_name, "name": name or tag_name, "body": body or "", "draft": draft},
         )
-
-    def check_runs(self, repo: str, ref: str) -> dict:
-        return self.get(f"/repos/{repo}/commits/{ref}/check-runs")
-
-    def branch_protection(self, repo: str, branch: str) -> dict:
-        return self.get(f"/repos/{repo}/branches/{branch}/protection")
 
     def create_repo(self, name: str, private: bool = False,
                     description: str = "", auto_init: bool = True) -> dict:
@@ -745,7 +726,7 @@ def readme_version(root: Path) -> str | None:
     if not readme:
         return None
     text = readme.read_text(encoding="utf-8", errors="replace")
-    for m in SEMVER.finditer(text):
+    for m in re.finditer(r"v?(\d+)\.(\d+)\.(\d+)", text):
         major = int(m.group(1))
         if 0 <= major <= 99:
             return m.group(0)
@@ -1092,23 +1073,9 @@ def ask_optional(prompt_text: str, default: str = "") -> str:
 # Git status / diff / log helpers
 # --------------------------------------------------------------------------
 
-def git_status(root: Path) -> dict:
-    p = git(root, "status", "--porcelain=v1", "-uno")
-    lines = [l for l in p.stdout.splitlines() if l.strip()]
-    staged = [l[3:] for l in lines if l.startswith(("A ", "M ", "D ", "R ", "C "))]
-    unstaged = [l[3:] for l in lines if not l.startswith("##") and not l[:2].strip().endswith(" ")]
-    branch_line = next((l for l in lines if l.startswith("##")), "##")
-    return {"lines": lines, "staged": staged, "branch_line": branch_line}
-
-
 def working_changes(root: Path) -> int:
     p = git(root, "status", "--porcelain")
     return len([l for l in p.stdout.splitlines() if l.strip()])
-
-
-def diff_stats(root: Path) -> str:
-    p = git(root, "diff", "--stat")
-    return p.stdout.strip()
 
 
 def track_changes(types: set[str], root: Path) -> list[str]:
@@ -1121,15 +1088,32 @@ def untracked_files(root: Path) -> list[str]:
     return [l for l in p.stdout.splitlines() if l.strip()]
 
 
-def all_working_files(root: Path) -> list[str]:
-    files = untracked_files(root)
-    files += track_changes({"M"}, root)
-    return files
+def _is_tracked(root: Path, rel: str) -> bool:
+    return git(root, "ls-files", "--error-unmatch", "--", rel).returncode == 0
+
+
+def _gitignored(root: Path, rel: str) -> bool:
+    return git(root, "check-ignore", "-q", "--", rel).returncode == 0
 
 
 # --------------------------------------------------------------------------
 # Ship readiness check (`status`)
 # --------------------------------------------------------------------------
+
+def _iter_repo_files(root: Path, cap: int = MAX_SCAN_FILES) -> Iterator[Path]:
+    """Yield project files: single bounded walk that skips .git and SKIP_DIRS."""
+    n = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root)
+        if ".git" in rel.parts or set(rel.parts) & SKIP_DIRS:
+            continue
+        yield path
+        n += 1
+        if n >= cap:
+            break
+
 
 def run_check(root: Path, no_remote: bool = False) -> int:
     """Ship-readiness report with an A–F grade and verdict."""
@@ -1203,50 +1187,39 @@ def run_check(root: Path, no_remote: bool = False) -> int:
         add("License present", False, fix="Add a LICENSE file before publishing")
 
     # 6. env hygiene
-    if (root / ".env").exists() and (root / ".gitignore").exists():
-        gi = (root / ".gitignore").read_text(encoding="utf-8", errors="replace")
-        if ".env" in gi:
-            add(".env ignored", True)
-        else:
-            add(".env ignored", False, ".env exists but is NOT in .gitignore",
-                fix="Add `.env` to .gitignore")
+    env_exists = (root / ".env").exists()
+    if _is_tracked(root, ".env"):
+        add(".env ignored", False, ".env is TRACKED in git",
+            fix="git rm --cached .env, then add `.env` to .gitignore")
+    elif env_exists and not _gitignored(root, ".env"):
+        add(".env ignored", False, ".env exists but is NOT gitignored",
+            fix="Add `.env` to .gitignore")
+    elif env_exists:
+        add(".env ignored", True, ".env is gitignored")
     else:
         add(".env ignored", True, "no .env file (nothing to leak)")
 
-    # 7. large files
-    big = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if ".git" in rel.parts or set(rel.parts) & SKIP_DIRS:
-            continue
+    # 7. large files + 8. TODO markers (single bounded walk)
+    big: list[str] = []
+    todos = 0
+    for path in _iter_repo_files(root):
         try:
-            if path.stat().st_size > 10 * 1024 * 1024:
-                big.append(str(rel))
+            size = path.stat().st_size
         except OSError:
             continue
+        if size > MAX_LARGE_FILE:
+            big.append(str(path.relative_to(root)))
+        if size <= MAX_SCAN_FILE and path.suffix.lower() not in BINARY_SUFFIXES:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            todos += len(re.findall(r"(?im)(?:^|\s)(?:#|//|;|/\*|<!--)?\s*(?:TODO|FIXME|HACK)(?=:|\()", text))
     if big:
         add("No files >10MB", False, ", ".join(big[:5]) + ("…" if len(big) > 5 else ""),
             fix="Use Git LFS or remove large binaries from the repo")
     else:
         add("No files >10MB", True)
-
-    # 8. TODO markers
-    todos = 0
-    for path in root.rglob("*"):
-        if not path.is_file() or path.stat().st_size > MAX_SCAN_FILE:
-            continue
-        rel = path.relative_to(root)
-        if ".git" in rel.parts or set(rel.parts) & SKIP_DIRS:
-            continue
-        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".ico", ".lock"}:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-        except Exception:
-            continue
-        todos += len(re.findall(r"(?im)(?:^|\s)(?:#|//|;|/\*|<!--)?\s*(?:TODO|FIXME|HACK)(?=:|\()", text))
     if todos:
         add("No TODO markers", False, f"{todos} TODO/FIXME marker(s) in the codebase")
     else:
@@ -1347,6 +1320,7 @@ def cmd_secrets(_yes: bool = False) -> None:
         warn("You have secret files (.env etc.) present — check they are gitignored, not tracked.")
     if any(f["kind"] == "Private Key Block" for f in findings):
         warn("Private keys should NEVER be committed. Rotate them if they were ever pushed.")
+    sys.exit(1)
 
 
 # --------------------------------------------------------------------------
@@ -1386,7 +1360,7 @@ def cmd_drift(yes: bool = False) -> None:
         info(f"  {v}: {', '.join(files) if files else 'git tag / README'}")
     if yes or confirm("Align all versions to one value?", default=True):
         primary = versions.get("package.json") or versions.get("pyproject.toml") or tag or sorted(unique)[0]
-        target = ask("Which version should everything be?", default=primary)
+        target = primary if yes else ask("Which version should everything be?", default=primary)
         for f in vfiles:
             if f["version"] != target:
                 set_version(root, f, target)
@@ -1577,6 +1551,8 @@ def build_changelog(root: Path, since_tag: str | None) -> str:
         return "No commits in range."
     lines: list[str] = []
     sections: dict[str, list[str]] = {}
+    repo = remote_repo(root)
+    url_base = f"https://github.com/{repo[0]}/{repo[1]}/commit/" if repo else ""
     for c in commits:
         m = CONVENTIONAL_RE.match(c["subject"])
         if m:
@@ -1589,10 +1565,10 @@ def build_changelog(root: Path, since_tag: str | None) -> str:
                 entry += f" (`{scope}`)"
             if breaking:
                 entry += " 🚨 BREAKING"
-            entry += f": {desc} ([{c['hash']}](https://github.com/…/{c['hash']}))"
+            entry += f": {desc} ([{c['hash']}]({url_base}{c['hash']}))"
             sections.setdefault(kind, []).append(entry)
         else:
-            sections.setdefault("other", []).append(f"- {c['subject']} ([{c['hash']}])")
+            sections.setdefault("other", []).append(f"- {c['subject']} ([{c['hash']}]({url_base}{c['hash']}))")
     for kind in ("feat", "fix", "perf", "security", "refactor", "docs", "chore", "other"):
         if kind in sections:
             label, _c = CONVENTIONAL_TYPES.get(kind, (kind.title(), "white"))
@@ -2045,7 +2021,7 @@ def cmd_logout(_yes: bool = False) -> None:
 
 def cmd_whoami(_yes: bool = False) -> None:
     if not has_auth():
-        fail("Not logged in — run `autosys login` first.", 0)
+        fail("Not logged in — run `autosys login` first.", 1)
     auth = load_auth()
     user = auth.get("user", {})
     if isinstance(user, dict) and user.get("login"):
@@ -2156,6 +2132,7 @@ Commands:
 
 Global flags:
   -y, --yes        accept defaults / skip prompts
+  -V, --version    show version and exit
   -h, --help       show help
 """
 
@@ -2172,6 +2149,10 @@ def main(argv: list[str] | None = None) -> None:
     for a in args:
         if a in ("-y", "--yes"):
             yes = True
+        elif a in ("-V", "--version"):
+            print_banner()
+            console.print(f"[bold cyan]{APP_NAME} {VERSION}[/] — {TAGLINE}")
+            return
         elif a in ("-h", "--help", "help"):
             console.print(help_text())
             return
@@ -2191,7 +2172,7 @@ def main(argv: list[str] | None = None) -> None:
     elif cmd == "secrets":
         cmd_secrets(yes)
     elif cmd == "drift":
-        cmd_drift(yes)
+        cmd_drift(yes or "--fix" in rest)
     elif cmd == "checkpoint":
         cmd_checkpoint(yes)
     elif cmd == "checkpoints":

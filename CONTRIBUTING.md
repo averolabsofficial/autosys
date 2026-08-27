@@ -24,9 +24,13 @@ Be kind, be constructive, be excellent to each other.
 ## Getting Started
 
 ```bash
+# Primary: install from PyPI (requires Python 3.10+)
+pip install autosys
+
+# Or: run from source
+pip install -r requirements.txt  # runtime deps
 git clone https://github.com/averolabsofficial/autosys.git
 cd autosys
-pip install rich requests        # runtime deps
 pip install pytest               # dev dep
 ```
 

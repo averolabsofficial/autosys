@@ -8,6 +8,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 
 - Planned: multi-repo `sync`, checkpoint diffs (`restore --diff`), Actions workflow generator, custom secret patterns, author blame reports.
 
+## [2.0.2] — 2026-08-27
+
+### Added
+
+- **`-V` / `--version` flag** — print version info and exit without a subcommand.
+- **Non-interactive `drift --fix`** — `drift --fix` (or `drift -y`) applies version alignment without a confirmation prompt, so it works in scripts and CI.
+
+### Changed
+
+- **`secrets` fails loudly** — the scanner now exits with code 1 when it finds leaked secrets, so CI can gate on findings.
+- **Clearer `whoami` when logged out** — prints `Not logged in — run autosys login first.` and exits 1 instead of failing ambiguously.
+- **Canonical changelog links** — auto-generated changelog entries now point at `github.com/<owner>/<repo>/commit/<sha>` URLs.
+- **Faster status checks 6–8** — environment hygiene, large-file and TODO-marker checks share one bounded repository walk instead of three.
+
 ## [2.0.1] — 2026-08-27
 
 ### Fixed

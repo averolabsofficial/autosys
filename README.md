@@ -14,7 +14,7 @@
 
 **One terminal tool. Git + GitHub + project intelligence. Zero ceremony.**
 
-[![Version](https://img.shields.io/badge/version-2.0.1-blue?style=for-the-badge)](https://github.com/averolabsofficial/autosys/releases)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue?style=for-the-badge)](https://github.com/averolabsofficial/autosys/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%E2%94%82%20macOS%20%E2%94%82%20Linux-important?style=for-the-badge)](https://github.com/averolabsofficial/autosys)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
@@ -51,15 +51,10 @@
 ## ⚡ Quick Start
 
 ```bash
-# 1. Install
-pip install rich requests          # dependencies
-git clone https://github.com/averolabsofficial/autosys.git
-cd autosys
+# 1. Install (Python 3.10+)
+pip install autosys
 
-# 2. Make it a command (one-time)
-autosys.bat                        # Windows — or drop autosys/autosys.py on your PATH
-
-# 3. Jump into any project
+# 2. Jump into any project
 cd ~/my-project
 autosys init                       # one-time project memory (.autosys/)
 autosys status                     # how ready am I to ship?
@@ -177,7 +172,7 @@ No release checklist. No forgot-to-bump version. No "did I push the tag?" — Au
 
 ## 🧑‍💻 Author & License
 
-Built with ❤️ by **Aditya** · Released under the **[MIT License](LICENSE)** · Version **2.0.1**
+Built with ❤️ by **Aditya** · Released under the **[MIT License](LICENSE)** · Version **2.0.2**
 
 <p align="center"><sub>AutoSys — YOUR PROJECT'S COMMAND CENTER · No ceremony, just shipped.</sub></p>
 </div>
