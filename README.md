@@ -30,13 +30,13 @@
 
 | 🛡️ **Know before you ship** | ⏱️ **Never lose work again** | 🚢 **Ship in one command** |
 |---|---|---|
-| `autosys status` grades your repo **A–F** across 13 real checks — git hygiene, version drift, secrets, README, license, CI, TODO debt & more | `autosys checkpoint` snapshots your **entire project state** — even dirty, uncommitted files — and `restore` brings it back without touching your branch | `autosys finish` runs tests → bumps versions everywhere → writes the changelog → commits → tags → pushes → drafts the GitHub release |
+| `autosys status` grades your repo **A–F** across 18 real checks in 5 categories (Git, Security, Version, Tests, Docs) — git hygiene, secret leaks, version drift, TODO debt & more | `autosys checkpoint` snapshots your **entire project state** — even dirty, uncommitted files — and `restore` brings it back without touching your branch | `autosys finish` runs tests → bumps versions everywhere → writes the changelog → commits → tags → pushes → drafts the GitHub release |
 
 ## 🎯 Feature Tour
 
 | Feature | What it does |
 |---|---|
-| 🏆 **Ship-Readiness Score** | 13-point audit with an A–F grade and a `🚀 SHIP IT` / `🛠 FIX BEFORE SHIPPING` verdict |
+| 🏆 **Ship-Readiness Score** | 100-point audit (5 categories × 20) with an A–F grade and a `🚀 SHIP IT` / `🛠 FIX BEFORE SHIPPING` verdict |
 | 🕵️ **Secret Scanner** | Detects 25+ secret types — AWS keys, GitHub/GitLab PATs, Slack, Stripe, OpenAI, JWTs, private keys, DB URLs, `.env` files & more |
 | 🔄 **Version Drift Killer** | Finds every place your version lives (`pyproject.toml`, `package.json`, `Cargo.toml`, `__init__.py`…) and aligns them with `--fix` |
 | 🕰️ **Checkpoints** | Git-native project snapshots that capture **uncommitted work**. List, compare, restore — branch history stays pristine |
@@ -68,20 +68,23 @@ autosys finish                     # full release, one command
 $ cd your-project
 $ autosys init
 ✓ Project memory saved — name: your-project, style: conventional
+✓ Scaffolded VERSION = 0.1.0 so `autosys status` can track your version.
+✓ Committed scaffolded VERSION file.
 
 $ autosys status
-┌───────────────────────────────────────────────────────────────┐
-│ Readiness: B (85/100 — 11/13 checks pass)                     │
-├───────────────────────────────────────────────────────────────┤
-│ ✓ Git repo initialized         ✓ Git identity set             │
-│ ✗ Working tree clean           ✓ In sync with origin          │
-│ ✓ Version files consistent     ✓ No leaked secrets            │
-│ ✓ README present               ✗ License present              │
-│ ✓ .env ignored                 ✓ No files >10MB               │
-│ ✓ No TODO markers              ✓ CI green                     │
-│ ✓ Project memory                                              │
-└───────────────────────────────────────────────────────────────┘
-│ 🛠 FIX BEFORE SHIPPING — add a LICENSE file                    │
+┌──────────────────────────────────────────────────────────────────┐
+│ Ship-readiness report — /home/you/your-project                   │
+└──────────────────────────────────────────────────────────────────┘
+Score: 90/100  —  Grade A
+
+  ✓ Git        20/20
+  ✓ Security   20/20
+  ⚠ Version    15/20
+  ✓ Tests      20/20
+  ✓ Docs       20/20
+┌──────────────────────────────────────────────────────────────────┐
+│ 🚀 SHIP IT                                                      │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ---

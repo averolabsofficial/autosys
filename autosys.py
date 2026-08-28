@@ -597,6 +597,14 @@ def cmd_init(yes: bool = False) -> None:
     }
     save_project_memory(root, mem)
     ok(f"Project memory saved to [bold]{mem_path}[/]")
+    if not detect_version_files(root):
+        (root / "VERSION").write_text("0.1.0\n", encoding="utf-8")
+        info("Scaffolded [bold]VERSION[/] = 0.1.0 so `autosys status` can track your version.")
+        staged = git(root, "add", "VERSION")
+        if staged.returncode == 0 and git(root, "commit", "-q", "-m", "chore: scaffold VERSION").returncode == 0:
+            ok("Committed scaffolded [bold]VERSION[/] file.")
+        else:
+            warn("Scaffolded [bold]VERSION[/] but could not commit it — commit it manually.")
     info("AutoSys will use this for smarter commit types, readiness checks and releases.")
 
 
@@ -1179,36 +1187,60 @@ def run_check(root: Path, no_remote: bool = False) -> int:
     sec_checks = []
     secrets = scan_secrets(root, quiet=True)
     if not secrets:
-        sec_checks.append(chk("No leaked secrets", 10, 10, "scan clean"))
+        sec_checks.append(chk("No leaked secrets", 4, 4, "scan clean"))
     else:
         names = sorted({s.get("file", "?") for s in secrets})
-        sec_checks.append(chk("No leaked secrets", 0, 10,
+        sec_checks.append(chk("No leaked secrets", 0, 4,
                               f"{len(secrets)} potential secret(s): {', '.join(names[:3])}"
                               + ("..." if len(names) > 3 else ""),
                               "Run `autosys secrets` and remove them before pushing"))
     env_path = root / ".env"
     if not env_path.exists():
-        sec_checks.append(chk(".env not tracked", 5, 5, "no .env file (nothing to leak)"))
+        sec_checks.append(chk(".env ignored", 4, 4, "no .env file (nothing to leak)"))
     elif _is_tracked(root, ".env"):
-        sec_checks.append(chk(".env not tracked", 0, 5, ".env is TRACKED in git",
+        sec_checks.append(chk(".env ignored", 0, 4, ".env is TRACKED in git",
                               "git rm --cached .env, then add `.env` to .gitignore"))
     elif not _gitignored(root, ".env"):
-        sec_checks.append(chk(".env not tracked", 0, 5, ".env exists but is NOT gitignored",
+        sec_checks.append(chk(".env ignored", 0, 4, ".env exists but is NOT gitignored",
                               "Add `.env` to .gitignore"))
     else:
-        sec_checks.append(chk(".env not tracked", 5, 5, ".env is gitignored"))
+        sec_checks.append(chk(".env ignored", 4, 4, ".env is gitignored"))
     tracked_secrets = [f for f in sorted(SECRET_FILE_NAMES) if (root / f).exists() and _is_tracked(root, f)]
     unignored_secrets = [f for f in sorted(SECRET_FILE_NAMES) if (root / f).exists() and not _gitignored(root, f)]
     if tracked_secrets:
-        sec_checks.append(chk("Secret files protected", 0, 5,
+        sec_checks.append(chk("Secret files protected", 0, 4,
                               "tracked: " + ", ".join(tracked_secrets),
                               "git rm --cached " + " ".join(tracked_secrets)))
     elif unignored_secrets:
-        sec_checks.append(chk("Secret files protected", 0, 5,
+        sec_checks.append(chk("Secret files protected", 0, 4,
                               "not gitignored: " + ", ".join(unignored_secrets),
                               "Add them to .gitignore"))
     else:
-        sec_checks.append(chk("Secret files protected", 5, 5, "no tracked/unignored secret files"))
+        sec_checks.append(chk("Secret files protected", 4, 4, "no tracked/unignored secret files"))
+    big: list[str] = []
+    todos = 0
+    for path in _iter_repo_files(root):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size > MAX_LARGE_FILE:
+            big.append(str(path.relative_to(root)))
+        if size <= MAX_SCAN_FILE and path.suffix.lower() not in BINARY_SUFFIXES:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            todos += len(re.findall(r"(?im)(?:^|\s)(?:#|//|;|/\*|<!--)?\s*(?:TODO|FIXME|HACK)(?=:|\()", text))
+    if big:
+        sec_checks.append(chk("No files >10MB", 0, 4, ", ".join(big[:5]) + ("…" if len(big) > 5 else ""),
+                              "Use Git LFS or remove large binaries from the repo"))
+    else:
+        sec_checks.append(chk("No files >10MB", 4, 4, "no files over 10MB"))
+    if todos:
+        sec_checks.append(chk("No TODO markers", 0, 4, f"{todos} TODO/FIXME marker(s) in the codebase"))
+    else:
+        sec_checks.append(chk("No TODO markers", 4, 4, "no TODO/FIXME markers"))
     categories["Security"] = sec_checks
 
     # ---------- Version (20) ----------
@@ -1353,8 +1385,8 @@ def run_check(root: Path, no_remote: bool = False) -> int:
     table = Table(title=f"[bold]Category breakdown[/] — {total}/100", box=box.SIMPLE_HEAVY, expand=False)
     table.add_column("Category", style="bold")
     table.add_column("Check", style="bold")
-    table.add_column("Pts", justify="center")
     table.add_column("Result", justify="center", width=8)
+    table.add_column("Pts", justify="center")
     table.add_column("Detail / Fix")
     for cat in ("Git", "Security", "Version", "Tests", "Docs"):
         for c in categories[cat]:
@@ -1365,7 +1397,7 @@ def run_check(root: Path, no_remote: bool = False) -> int:
             if c["earned"] < c["max"] and c["fix"]:
                 detail = (f"{c['detail']}  →  [yellow]{c['fix']}[/]" if c["detail"]
                           else f"[yellow]{c['fix']}[/]")
-            table.add_row(cat, c["name"], pts_txt, status_txt, detail)
+            table.add_row(cat, c["name"], status_txt, pts_txt, detail)
     console.print(table)
 
     verdict = "SHIP IT" if grade in ("A", "B") else "FIX BEFORE SHIPPING"

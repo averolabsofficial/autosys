@@ -149,9 +149,11 @@ Creates `.autosys/project.json` — the project's "memory":
 
 What AutoSys uses this for:
 
-- **`status`** — "Project memory" readiness check.
+- **`status`** — the Docs readiness category (project memory presence).
 - **`commit`** — remembers your commit-message style (currently `conventional`).
 - **`doctor`** — reports which project you're in.
+
+If the project has **no version source** (`pyproject.toml`, `package.json`, `Cargo.toml`, `VERSION`…), `init` also scaffolds a `VERSION` file (`0.1.0`) and commits it, so `status` can track and grade your version from day one.
 
 `-y` behavior: uses the folder name as project name, empty description, and `conventional` commit style. (Earlier builds ignored `-y` here and hung on a TTY — fixed in 2.0.0.)
 
@@ -163,23 +165,28 @@ What AutoSys uses this for:
 autosys status        # or: autosys check
 ```
 
-Runs **13 checks** and grades the repo:
+Runs **18 checks** across **5 categories × 20 pts = 100** and grades the repo:
 
-| # | Check | Fail means |
-|---|---|---|
-| 1 | Git repo initialized | You're not in a git repo |
-| 2 | Git identity set | `user.name`/`user.email` missing |
-| 3 | Working tree clean | Uncommitted changes pending |
-| 4 | In sync with origin | Ahead (push) or behind (pull) |
-| 5 | Version files consistent | Drift between version files |
-| 6 | No leaked secrets | A secret pattern matched |
-| 7 | README present | No README for humans |
-| 8 | License present | No LICENSE (important for publishing) |
-| 9 | `.env` ignored | `.env` exists but isn't in `.gitignore` |
-| 10 | No files >10MB | A tracked file is larger than 10MB (likely a build artifact or binary) |
-| 11 | No TODO markers | Actionable marker annotations (keyword followed by a colon or paren) in code |
-| 12 | CI green | Failing/pending check runs (needs auth + remote) |
-| 13 | Project memory | Run `autosys init` |
+| Category | Check | Pts | Fail means |
+|---|---|---|---|
+| Git | Repo initialized | 5 | You're not in a git repo |
+| Git | Git identity set | 5 | `user.name`/`user.email` missing |
+| Git | Working tree clean | 5 | Uncommitted changes pending |
+| Git | In sync with origin | 5 | Ahead (push) or behind (pull) |
+| Security | No leaked secrets | 4 | A secret pattern matched |
+| Security | `.env` ignored | 4 | `.env` exists but isn't in `.gitignore` |
+| Security | Secret files protected | 4 | A secret file (`.env`, keys…) is tracked or unignored |
+| Security | No files >10MB | 4 | A tracked file is larger than 10MB (build artifact / binary) |
+| Security | No TODO markers | 4 | `TODO`/`FIXME`/`HACK` followed by `:` or `(` in code |
+| Version | Version files present | 5 | No version file found |
+| Version | Version files consistent | 10 | Drift between version files |
+| Version | Version ahead of last tag | 5 | Version isn't ahead of the last git tag |
+| Tests | Test framework detected | 5 | No pytest / `test` script / Makefile |
+| Tests | Test files present | 5 | No test files found |
+| Tests | Tests pass | 10 | Tests fail, time out, or have no runner |
+| Docs | README | 8 | No README for humans |
+| Docs | LICENSE | 6 | No LICENSE (important for publishing) |
+| Docs | CHANGELOG | 6 | No CHANGELOG |
 
 **Grading:**
 
@@ -197,33 +204,44 @@ Example output:
 
 ```console
 $ autosys status
-┌────────────────────────────────────────────────────────────────────┐
-│ Ship-readiness report — /home/you/demo-project                     │
-└────────────────────────────────────────────────────────────────────┘
-Readiness: B (85/100 — 11/13 checks pass)
-┌───────────────────────────┬────────┬───────────────────────────────┐
-│ Check                     │ Result │ Detail / Fix                  │
-├───────────────────────────┼────────┼───────────────────────────────┤
-│ Git repo initialized      │  PASS  │                               │
-│ Git identity set          │  PASS  │ You <you@x.com>               │
-│ Working tree clean        │  FAIL  │ 2 pending change(s)           │
-│ In sync with origin       │  PASS  │ main == origin/main           │
-│ Version files consistent  │  PASS  │ 2 file(s) at 0.1.0            │
-│ No leaked secrets         │  PASS  │                               │
-│ README present            │  PASS  │                               │
-│ License present           │  FAIL  │ → Add a LICENSE file before publishing │
-│ .env ignored              │  PASS  │                               │
-│ No files >10MB            │  PASS  │                               │
-│ No TODO markers           │  PASS  │                               │
-│ CI green                  │  PASS  │ not checked (no remote/auth)  │
-│ Project memory (.autosys) │  PASS  │ demo-project                  │
-└───────────────────────────┴────────┴───────────────────────────────┘
-┌────────────────────────────────────────────┐
-│ 🛠 FIX BEFORE SHIPPING                     │
-└────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│ Ship-readiness report — /home/you/demo-project                            │
+└───────────────────────────────────────────────────────────────────────────┘
+Running tests: /usr/bin/python -m pytest -q
+
+Score: 90/100  —  Grade A
+
+  ⚠ Git        15/20
+  ✓ Security   20/20
+  ⚠ Version    15/20
+  ✓ Tests      20/20
+  ✓ Docs       20/20
+                  Category breakdown — 90/100
+  Category   Check                    Result     Pts    Detail / Fix
+  Git        Repo initialized         PASS      5/5    git repo found
+  Git        Git identity set         PASS      5/5    You <you@x.com>
+  Git        Working tree clean       FAIL      0/5    2 pending change(s) → Commit or stash first
+  Git        In sync with origin      PASS      5/5    main == origin/main
+  Security   No leaked secrets        PASS      4/4    scan clean
+  Security   .env ignored             PASS      4/4    no .env file (nothing to leak)
+  Security   Secret files protected   PASS      4/4    no tracked/unignored secret files
+  Security   No files >10MB           PASS      4/4    no files over 10MB
+  Security   No TODO markers          PASS      4/4    no TODO/FIXME markers
+  Version    Version files present    PASS      5/5    1 file(s): pyproject.toml
+  Version    Version files consistent PASS     10/10   all 1 file(s) at 0.2.0
+  Version    Version ahead of last tag FAIL      0/5    0.2.0 is not ahead of v0.2.0 → autosys finish
+  Tests      Test framework detected  PASS      5/5    pytest
+  Tests      Test files present       PASS      5/5    1 test file(s) found
+  Tests      Tests pass               PASS     10/10   exit 0
+  Docs       README                   PASS      8/8    found
+  Docs       LICENSE                  PASS      6/6    found
+  Docs       CHANGELOG                PASS      6/6    found
+┌───────────────────────────────────────────────────────────────────────────┐
+│ 🚀 SHIP IT                                                               │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Tip:** CI check (#12) only runs when you have a GitHub-style origin remote **and** are logged in. Otherwise it reports "not checked" and counts as a pass so local-only workflows aren't penalized.
+> **Tips:** the `In sync with origin` check passes with "n/a" when no remote is configured, so local-only workflows aren't penalized. The Tests category runs your suite for real (`pytest` / `npm test` / `make test`, 180s timeout) — a failing suite costs 10 points. Categories are shown with ✓ (full), ⚠ (partial), ✗ (zero).
 
 ---
 
@@ -385,7 +403,7 @@ Scans the repo (bounded: skips `.git`, binaries, images, lock files, build dirs)
 - **Crypto/identity:** Private key blocks (`-----BEGIN ... PRIVATE KEY-----`), JWTs, generic `Bearer` tokens
 - **Env hygiene:** committed `.env`-style `KEY=value` assignments; flagging of known secret file names (`.env*`, `id_rsa`, `credentials.json`, `secrets.json`)
 
-Output: a table of `file : line : kind : matched-prefix` so you can purge each hit. Exit code `0` if clean, `1` if findings. `status` runs this in quiet mode as check #6.
+Output: a table of `file : line : kind : matched-prefix` so you can purge each hit. Exit code `0` if clean, `1` if findings. `status` runs this in quiet mode as the Security category's "No leaked secrets" check.
 
 > **Not a substitute for `gitleaks`/`trufflehog`:** AutoSys scans the current worktree, not history. For leaked-secrets-in-history, run a dedicated tool.
 
@@ -660,7 +678,7 @@ python autosys.py --help                 # smoke test
 - Rich `console` / `err_console` for all rendering
 - `SecureStore` — DPAPI auth storage
 - `GitHubAPI` — REST client (auth, repos, releases, check-runs)
-- `run_check()` — the 13-point status engine
+- `run_check()` — the 5×20 status engine (18 checks, 5 categories → A–F grade)
 - `scan_secrets()` — bounded regex engine
 - `detect_version_files()` / `set_version()` — drift + bump machinery
 - `cmd_*` — one function per command, dispatched from `main()`
