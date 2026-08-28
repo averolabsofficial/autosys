@@ -1923,7 +1923,7 @@ def cmd_restore(yes: bool = False) -> None:
 def cmd_finish(yes: bool = False) -> None:
     root = repo_root() or fail("Not inside a git repository — cd into a project first.")
     repo = remote_repo(root)
-    has_remote = repo is not None
+    has_remote = repo is not None or bool(git(root, "remote").stdout.strip())
     console.print(Panel("[bold cyan]Release pipeline[/] — `autosys finish`", box=box.ROUNDED))
 
     TOTAL_STEPS = 6
@@ -1997,7 +1997,7 @@ def cmd_finish(yes: bool = False) -> None:
         err_console.print("[yellow]Fix: git config user.name 'Your Name' && git config user.email 'you@x.com'[/]")
         sys.exit(1)
     step_ok(f"clean tree | {uname} <{uemail}> | branch {current_branch(root)}"
-            + (f" | remote {repo[0]}/{repo[1]}" if has_remote else ""))
+            + (f" | remote {repo[0]}/{repo[1]}" if repo else ""))
 
     # ---- Step 2: tests ----
     step("Tests")
@@ -2112,7 +2112,8 @@ def cmd_finish(yes: bool = False) -> None:
         else:
             step_ok(f"tagged {tag_name}")
     if has_remote:
-        p = git(root, "push", "--follow-tags", "origin", current_branch(root))
+        branch = current_branch(root)
+        p = git(root, "push", "origin", branch)
         if p.returncode != 0:
             err_console.print(f"[bold red]X Step 5 failed:[/] push exited with code {p.returncode}")
             tail = (p.stderr or "").strip()[-600:]
@@ -2120,14 +2121,27 @@ def cmd_finish(yes: bool = False) -> None:
                 err_console.print(f"  [red]{tail}[/]")
             err_console.print(f"[yellow]Fix: the release commit + tag {tag_name} are safe locally. "
                               f"Rerun `autosys finish` to resume, or push manually: "
-                              f"git push --follow-tags origin {current_branch(root)}[/]")
+                              f"git push origin {branch} && git push origin {tag_name}[/]")
             sys.exit(1)
-        step_ok("branch + tag pushed to origin")
+        step_ok("branch pushed to origin")
+        if tag_name:
+            tp = git(root, "push", "origin", f"refs/tags/{tag_name}:refs/tags/{tag_name}")
+            if tp.returncode != 0:
+                err_console.print(f"[bold red]X Step 5 failed:[/] tag push exited with code {tp.returncode}")
+                tail = (tp.stderr or "").strip()[-600:]
+                if tail:
+                    err_console.print(f"  [red]{tail}[/]")
+                err_console.print(f"[yellow]Fix: origin already has a tag named {tag_name} pointing elsewhere. "
+                                  f"Delete it with `git push origin :refs/tags/{tag_name}` if it was never released, "
+                                  f"then rerun `autosys finish`.[/]")
+                sys.exit(1)
+            step_ok(f"tag {tag_name} pushed to origin")
     else:
         warn("No remote - skipped push (commit + tag are local).")
 
     # ---- Step 6: verification + GitHub release ----
     step("Verification + GitHub release")
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
     if not has_remote:
         step_ok(f"verified locally: commit {head[:8]} + tag {tag_name}")
         console.print(Panel(f"[green]Release complete (local only) - v{new_ver}[/]", box=box.ROUNDED))
@@ -2173,8 +2187,11 @@ def cmd_finish(yes: bool = False) -> None:
                 err_console.print(f"[yellow]Fix: rerun `autosys finish` to resume, "
                                   f"or publish manually on {full}/releases[/]")
                 sys.exit(1)
-    elif repo:
-        warn("Not logged in - GitHub release skipped. Run `autosys login` first.")
+    elif has_remote:
+        if repo:
+            warn("Not logged in - GitHub release skipped. Run `autosys login` first.")
+        else:
+            warn("Origin is not a GitHub URL - GitHub release skipped (git push already verified).")
 
     console.print(Panel(f"[green]Release complete - pushed & verified: v{new_ver} "
                         f"on origin/{branch} + tag {tag_name}[/]", box=box.ROUNDED))
