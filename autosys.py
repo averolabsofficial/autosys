@@ -1128,175 +1128,247 @@ def _iter_repo_files(root: Path, cap: int = MAX_SCAN_FILES) -> Iterator[Path]:
 
 
 def run_check(root: Path, no_remote: bool = False) -> int:
-    """Ship-readiness report with an A–F grade and verdict."""
+    """Ship-readiness report — 5 categories x 20 pts = 100, with a full breakdown."""
     console.print(Panel(f"[bold cyan]Ship-readiness report[/] — [bold]{root}[/]", box=box.ROUNDED))
-    mem = load_project_memory(root)
-    checks: list[dict] = []
-
-    def add(name: str, passed: bool, detail: str = "", fix: str = ""):
-        checks.append({"name": name, "passed": passed, "detail": detail, "fix": fix})
-
     branch = current_branch(root)
     repo = remote_repo(root)
+    has_remote = repo is not None
 
-    # 1. git repo + identity
+    def chk(name, earned, max_pts, detail="", fix=""):
+        return {"name": name, "earned": earned, "max": max_pts, "detail": detail, "fix": fix}
+
+    categories = {}
+    CAT = 20
+
+    # ---------- Git (20) ----------
+    git_checks = []
     if is_git_repo(root):
-        add("Git repo initialized", True)
+        git_checks.append(chk("Repo initialized", 5, 5, "git repo found"))
     else:
-        add("Git repo initialized", False, fix="Run `git init` inside the project")
-    name = git(root, "config", "user.name").stdout.strip()
-    email = git(root, "config", "user.email").stdout.strip()
-    if name and email:
-        add("Git identity set", True, f"{name} <{email}>")
+        git_checks.append(chk("Repo initialized", 0, 5, "not a git repo", "Run `git init`"))
+    uname = git(root, "config", "user.name").stdout.strip()
+    uemail = git(root, "config", "user.email").stdout.strip()
+    if uname and uemail:
+        git_checks.append(chk("Git identity set", 5, 5, f"{uname} <{uemail}>"))
     else:
-        add("Git identity set", False, fix="git config user.name 'Your Name' && git config user.email 'you@x.com'")
-
-    # 2. commit hygiene
-    if working_changes(root) > 0:
-        add("Working tree clean", False, f"{working_changes(root)} pending change(s)")
+        git_checks.append(chk("Git identity set", 0, 5, "user.name/user.email not set",
+                              "git config user.name 'You' && git config user.email 'you@x.com'"))
+    dirty = working_changes(root)
+    if dirty == 0:
+        git_checks.append(chk("Working tree clean", 5, 5, "no pending changes"))
     else:
-        add("Working tree clean", True)
-    if not no_remote and repo:
-        remote_state = git(root, "rev-list", "--left-right", "--count", f"{branch}...origin/{branch}")
-        if remote_state.returncode == 0:
-            ahead, behind = remote_state.stdout.split()
+        git_checks.append(chk("Working tree clean", 0, 5, f"{dirty} pending change(s)",
+                              "Commit or stash first (`autosys commit`)"))
+    if not has_remote:
+        git_checks.append(chk("In sync with origin", 5, 5, "n/a — no remote configured"))
+    else:
+        rs = git(root, "rev-list", "--left-right", "--count", f"{branch}...origin/{branch}")
+        if rs.returncode == 0:
+            ahead, behind = rs.stdout.split()
             if int(ahead) == 0 and int(behind) == 0:
-                add("In sync with origin", True, f"{branch} == origin/{branch}")
+                git_checks.append(chk("In sync with origin", 5, 5, f"{branch} == origin/{branch}"))
             else:
-                detail = f"{branch} is {ahead} ahead, {behind} behind origin/{branch}"
-                fix = "git push" if int(ahead) else "git pull"
-                add("In sync with origin", False, detail, fix)
+                git_checks.append(chk("In sync with origin", 0, 5,
+                                      f"{branch} is {ahead} ahead, {behind} behind origin/{branch}",
+                                      "git push" if int(ahead) else "git pull"))
+        else:
+            git_checks.append(chk("In sync with origin", 5, 5, "n/a — origin/{branch} not fetched"))
+    categories["Git"] = git_checks
 
-    # 3. version sanity
+    # ---------- Security (20) ----------
+    sec_checks = []
+    secrets = scan_secrets(root, quiet=True)
+    if not secrets:
+        sec_checks.append(chk("No leaked secrets", 10, 10, "scan clean"))
+    else:
+        names = sorted({s.get("file", "?") for s in secrets})
+        sec_checks.append(chk("No leaked secrets", 0, 10,
+                              f"{len(secrets)} potential secret(s): {', '.join(names[:3])}"
+                              + ("..." if len(names) > 3 else ""),
+                              "Run `autosys secrets` and remove them before pushing"))
+    env_path = root / ".env"
+    if not env_path.exists():
+        sec_checks.append(chk(".env not tracked", 5, 5, "no .env file (nothing to leak)"))
+    elif _is_tracked(root, ".env"):
+        sec_checks.append(chk(".env not tracked", 0, 5, ".env is TRACKED in git",
+                              "git rm --cached .env, then add `.env` to .gitignore"))
+    elif not _gitignored(root, ".env"):
+        sec_checks.append(chk(".env not tracked", 0, 5, ".env exists but is NOT gitignored",
+                              "Add `.env` to .gitignore"))
+    else:
+        sec_checks.append(chk(".env not tracked", 5, 5, ".env is gitignored"))
+    tracked_secrets = [f for f in sorted(SECRET_FILE_NAMES) if (root / f).exists() and _is_tracked(root, f)]
+    unignored_secrets = [f for f in sorted(SECRET_FILE_NAMES) if (root / f).exists() and not _gitignored(root, f)]
+    if tracked_secrets:
+        sec_checks.append(chk("Secret files protected", 0, 5,
+                              "tracked: " + ", ".join(tracked_secrets),
+                              "git rm --cached " + " ".join(tracked_secrets)))
+    elif unignored_secrets:
+        sec_checks.append(chk("Secret files protected", 0, 5,
+                              "not gitignored: " + ", ".join(unignored_secrets),
+                              "Add them to .gitignore"))
+    else:
+        sec_checks.append(chk("Secret files protected", 5, 5, "no tracked/unignored secret files"))
+    categories["Security"] = sec_checks
+
+    # ---------- Version (20) ----------
+    ver_checks = []
     vfiles = detect_version_files(root)
+    if vfiles:
+        ver_checks.append(chk("Version files present", 5, 5,
+                              f"{len(vfiles)} file(s): " + ", ".join(f["path"] for f in vfiles[:4])
+                              + ("..." if len(vfiles) > 4 else "")))
+    else:
+        ver_checks.append(chk("Version files present", 0, 5, "no version file found",
+                              "Add package.json / pyproject.toml / VERSION"))
     if vfiles:
         versions = {f["path"]: f["version"] for f in vfiles}
         if len(set(versions.values())) == 1:
-            add("Version files consistent", True, f"{len(vfiles)} file(s) at {list(versions.values())[0]}")
+            ver_checks.append(chk("Version files consistent", 10, 10,
+                                  f"all {len(vfiles)} file(s) at {list(versions.values())[0]}"))
         else:
-            add("Version files consistent", False,
-                "drift detected: " + ", ".join(f"{k}={v}" for k, v in versions.items()),
-                fix="Run `autosys drift --fix` to align versions")
+            drift = ", ".join(f"{k}={v}" for k, v in versions.items())
+            ver_checks.append(chk("Version files consistent", 0, 10, "drift: " + drift,
+                                  "Run `autosys drift --fix`"))
     else:
-        add("Version files present", False, fix="Add package.json / pyproject.toml / VERSION")
-
-    # 4. secrets scan
-    secrets = scan_secrets(root, quiet=True)
-    if secrets:
-        add("No leaked secrets", False, f"{len(secrets)} potential secret(s) found",
-            fix="Run `autosys secrets` for details and remove them before pushing")
+        ver_checks.append(chk("Version files consistent", 0, 10, "n/a — no version files"))
+    pv = primary_version(root)
+    lt = latest_tag(root)
+    if pv is None:
+        ver_checks.append(chk("Version ahead of last tag", 5, 5, "n/a — no version detected"))
+    elif lt is None:
+        ver_checks.append(chk("Version ahead of last tag", 5, 5, f"n/a — no tags yet (v{pv})"))
     else:
-        add("No leaked secrets", True)
-
-    # 5. README / license / changelog
-    if first_existing(root, "README.md", "README.rst", "README.txt", "README"):
-        add("README present", True)
-    else:
-        add("README present", False, fix="Add a README.md so people understand the project")
-    if first_existing(root, "LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"):
-        add("License present", True)
-    else:
-        add("License present", False, fix="Add a LICENSE file before publishing")
-
-    # 6. env hygiene
-    env_exists = (root / ".env").exists()
-    if _is_tracked(root, ".env"):
-        add(".env ignored", False, ".env is TRACKED in git",
-            fix="git rm --cached .env, then add `.env` to .gitignore")
-    elif env_exists and not _gitignored(root, ".env"):
-        add(".env ignored", False, ".env exists but is NOT gitignored",
-            fix="Add `.env` to .gitignore")
-    elif env_exists:
-        add(".env ignored", True, ".env is gitignored")
-    else:
-        add(".env ignored", True, "no .env file (nothing to leak)")
-
-    # 7. large files + 8. TODO markers (single bounded walk)
-    big: list[str] = []
-    todos = 0
-    for path in _iter_repo_files(root):
         try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        if size > MAX_LARGE_FILE:
-            big.append(str(path.relative_to(root)))
-        if size <= MAX_SCAN_FILE and path.suffix.lower() not in BINARY_SUFFIXES:
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore")
-            except Exception:
-                continue
-            todos += len(re.findall(r"(?im)(?:^|\s)(?:#|//|;|/\*|<!--)?\s*(?:TODO|FIXME|HACK)(?=:|\()", text))
-    if big:
-        add("No files >10MB", False, ", ".join(big[:5]) + ("…" if len(big) > 5 else ""),
-            fix="Use Git LFS or remove large binaries from the repo")
-    else:
-        add("No files >10MB", True)
-    if todos:
-        add("No TODO markers", False, f"{todos} TODO/FIXME marker(s) in the codebase")
-    else:
-        add("No TODO markers", True)
+            if parse_semver(pv) > parse_semver(lt):
+                ver_checks.append(chk("Version ahead of last tag", 5, 5, f"{pv} > {lt}"))
+            else:
+                ver_checks.append(chk("Version ahead of last tag", 0, 5,
+                                      f"{pv} is not ahead of {lt}",
+                                      "Run `autosys finish` to bump + tag a release"))
+        except TypeError:
+            ver_checks.append(chk("Version ahead of last tag", 5, 5, f"n/a — unparseable ({pv}/{lt})"))
+    categories["Version"] = ver_checks
 
-    # 9. CI status (requires auth + remote)
-    ci_status = None
-    if not no_remote and repo and has_auth():
+    # ---------- Tests (20) ----------
+    test_checks = []
+    test_cmd = None
+    if (root / "pyproject.toml").exists() or (root / "pytest.ini").exists() or (root / "tox.ini").exists():
+        test_cmd = [sys.executable, "-m", "pytest", "-q"]
+        framework = "pytest"
+    elif (root / "package.json").exists():
         try:
-            api = GitHubAPI()
-            branch_name = branch.split("/")[-1]
-            runs = api.get(f"/repos/{repo[0]}/{repo[1]}/commits/{branch_name}/check-runs")
-            check_runs = runs.get("check_runs", [])
-            if check_runs:
-                failed = [r for r in check_runs if r.get("conclusion") in ("failure", "timed_out", "action_required")]
-                pending = [r for r in check_runs if r.get("status") != "completed"]
-                if failed:
-                    ci_status = ("fail", f"{len(failed)} failing check(s) on {branch_name}")
-                elif pending:
-                    ci_status = ("pending", f"{len(pending)} check(s) still running on {branch_name}")
-                else:
-                    ci_status = ("pass", f"all {len(check_runs)} checks green on {branch_name}")
+            scripts = json.loads((root / "package.json").read_text(encoding="utf-8")).get("scripts", {})
+            if scripts.get("test"):
+                test_cmd = ["npm", "test", "--silent"]
+                framework = "npm test"
+            else:
+                framework = None
         except Exception:
-            ci_status = None
-    if ci_status is None:
-        add("CI green", True, "not checked (no remote/auth)")
-    elif ci_status[0] == "pass":
-        add("CI green", True, ci_status[1])
+            framework = None
+    elif (root / "Makefile").exists():
+        test_cmd = ["make", "test"]
+        framework = "make test"
     else:
-        add("CI green", False, ci_status[1], fix="Open the Actions tab and fix failing checks")
-
-    # 10. project memory
-    if mem:
-        add("Project memory (.autosys)", True, mem.get("name", root.name))
+        framework = None
+    if test_cmd:
+        test_checks.append(chk("Test framework detected", 5, 5, f"{framework} ({' '.join(test_cmd)})"))
     else:
-        add("Project memory (.autosys)", False, fix="Run `autosys init` to save project preferences")
+        test_checks.append(chk("Test framework detected", 0, 5, "no pytest / test script / Makefile",
+                               "Add a test command (e.g. `pytest` in pyproject.toml)"))
+    n_test_files = 0
+    for p in _iter_repo_files(root):
+        n = p.name
+        rel = str(p.relative_to(root)).replace("\\", "/")
+        if n.startswith("test_") or n.endswith(("_test.py", ".test.js", ".test.ts")) or "/tests/" in f"/{rel}/":
+            n_test_files += 1
+    if n_test_files:
+        test_checks.append(chk("Test files present", 5, 5, f"{n_test_files} test file(s) found"))
+    else:
+        test_checks.append(chk("Test files present", 0, 5, "no test files found",
+                               "Add tests (test_*.py / *.test.js / tests/)"))
+    if not test_cmd:
+        if n_test_files:
+            test_checks.append(chk("Tests pass", 0, 10, "test files present but no runner configured",
+                                   "Add pytest or a `test` script"))
+        else:
+            test_checks.append(chk("Tests pass", 10, 10, "n/a — no tests to run"))
+    else:
+        run_cmd = (["cmd", "/c"] if os.name == "nt" and test_cmd[0] in ("npm", "npx") else []) + test_cmd
+        info(f"Running tests: {' '.join(run_cmd)}")
+        try:
+            p = subprocess.run(run_cmd, cwd=str(root), capture_output=True, text=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            test_checks.append(chk("Tests pass", 0, 10, "timed out after 180s", "Run tests manually"))
+        except FileNotFoundError:
+            test_checks.append(chk("Tests pass", 0, 10, f"runner not found: {test_cmd[0]}",
+                                   "Install the test runner (e.g. npm install)"))
+        else:
+            if p.returncode == 0:
+                test_checks.append(chk("Tests pass", 10, 10, "exit 0"))
+            else:
+                tail = (p.stdout or p.stderr or "").strip().splitlines()
+                detail = tail[-1][:90] if tail else f"exit code {p.returncode}"
+                test_checks.append(chk("Tests pass", 0, 10, detail,
+                                       "Fix failing tests, then rerun `autosys status`"))
+    categories["Tests"] = test_checks
 
-    # --- score ---
-    total = len(checks)
-    passed = sum(1 for c in checks if c["passed"])
-    score = round(100 * passed / total) if total else 100
-    if score >= 90:
+    # ---------- Docs (20) ----------
+    doc_checks = []
+    if first_existing(root, "README.md", "README.rst", "README.txt", "README"):
+        doc_checks.append(chk("README", 8, 8, "found"))
+    else:
+        doc_checks.append(chk("README", 0, 8, "missing", "Add a README.md"))
+    if first_existing(root, "LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"):
+        doc_checks.append(chk("LICENSE", 6, 6, "found"))
+    else:
+        doc_checks.append(chk("LICENSE", 0, 6, "missing", "Add a LICENSE before publishing"))
+    if first_existing(root, "CHANGELOG.md", "CHANGELOG", "HISTORY.md"):
+        doc_checks.append(chk("CHANGELOG", 6, 6, "found"))
+    else:
+        doc_checks.append(chk("CHANGELOG", 0, 6, "missing", "Run `autosys finish` to generate one"))
+    categories["Docs"] = doc_checks
+
+    # ---------- score ----------
+    cat_scores = {cat: sum(c["earned"] for c in checks) for cat, checks in categories.items()}
+    total = sum(cat_scores.values())
+    if total >= 90:
         grade, gcolor = "A", "green"
-    elif score >= 75:
+    elif total >= 75:
         grade, gcolor = "B", "cyan"
-    elif score >= 60:
+    elif total >= 60:
         grade, gcolor = "C", "yellow"
-    elif score >= 40:
+    elif total >= 40:
         grade, gcolor = "D", "magenta"
     else:
         grade, gcolor = "F", "red"
 
-    table = Table(title=f"Readiness: [bold {gcolor}]{grade}[/]  ({score}/100 — {passed}/{total} checks pass)", box=box.SIMPLE_HEAVY, expand=False)
+    console.print(f"\n[bold {gcolor}]Score: {total}/100[/]  —  Grade [bold {gcolor}]{grade}[/]\n")
+    for cat in ("Git", "Security", "Version", "Tests", "Docs"):
+        earned = cat_scores[cat]
+        icon = chr(0x2713) if earned == CAT else (chr(0x2717) if earned == 0 else chr(0x26A0))
+        icon_color = "green" if earned == CAT else ("red" if earned == 0 else "yellow")
+        console.print(f"  [{icon_color}]{icon}[/] [bold]{cat:<10}[/] {earned:>2}/20")
+
+    table = Table(title=f"[bold]Category breakdown[/] — {total}/100", box=box.SIMPLE_HEAVY, expand=False)
+    table.add_column("Category", style="bold")
     table.add_column("Check", style="bold")
+    table.add_column("Pts", justify="center")
     table.add_column("Result", justify="center", width=8)
     table.add_column("Detail / Fix")
-    for c in checks:
-        status_txt = "[green]PASS[/]" if c["passed"] else "[red]FAIL[/]"
-        detail = c["detail"] or c.get("fix", "")
-        if not c["passed"] and c.get("fix"):
-            detail = f"{c['detail']}  →  [yellow]{c['fix']}[/]" if c["detail"] else f"[yellow]{c['fix']}[/]"
-        table.add_row(c["name"], status_txt, detail)
+    for cat in ("Git", "Security", "Version", "Tests", "Docs"):
+        for c in categories[cat]:
+            status_txt = "[green]PASS[/]" if c["earned"] == c["max"] else (
+                "[yellow]PARTIAL[/]" if c["earned"] else "[red]FAIL[/]")
+            pts_txt = f"{c['earned']}/{c['max']}"
+            detail = c["detail"] or c["fix"]
+            if c["earned"] < c["max"] and c["fix"]:
+                detail = (f"{c['detail']}  →  [yellow]{c['fix']}[/]" if c["detail"]
+                          else f"[yellow]{c['fix']}[/]")
+            table.add_row(cat, c["name"], pts_txt, status_txt, detail)
     console.print(table)
 
-    verdict = "🚀 SHIP IT" if grade in ("A", "B") else "🛠 FIX BEFORE SHIPPING"
+    verdict = "SHIP IT" if grade in ("A", "B") else "FIX BEFORE SHIPPING"
     console.print(Panel(f"[bold {gcolor}]{verdict}[/]", box=box.ROUNDED))
     return 0 if grade in ("A", "B") else 1
 
@@ -1850,94 +1922,263 @@ def cmd_restore(yes: bool = False) -> None:
 
 def cmd_finish(yes: bool = False) -> None:
     root = repo_root() or fail("Not inside a git repository — cd into a project first.")
-    mem = load_project_memory(root)
     repo = remote_repo(root)
+    has_remote = repo is not None
     console.print(Panel("[bold cyan]Release pipeline[/] — `autosys finish`", box=box.ROUNDED))
 
-    # 0. preflight
-    if working_changes(root) > 0:
-        fail("Working tree is dirty — commit everything first (try `autosys commit`).")
+    TOTAL_STEPS = 6
+    step_no = 0
+    content = ""
 
-    # 1. tests
+    def step(name: str) -> None:
+        nonlocal step_no
+        step_no += 1
+        console.print(f"\n[bold cyan]Step {step_no}/{TOTAL_STEPS}[/] — {name}")
+
+    def step_ok(msg: str) -> None:
+        console.print(f"  [green]OK[/] {msg}")
+
+    def step_fail(step_name: str, p: subprocess.CompletedProcess, hint: str) -> None:
+        err_console.print(f"[bold red]X Step {step_name} failed[/] (exit code {p.returncode})")
+        tail = (p.stderr or p.stdout or "").strip()[-600:]
+        if tail:
+            err_console.print(f"  [red]{tail}[/]")
+        err_console.print(f"[yellow]Fix: {hint}[/]")
+        sys.exit(1)
+
+    def local_tag_sha(tag: str) -> str | None:
+        p = git(root, "rev-list", "-n", "1", tag)
+        return p.stdout.strip() if p.returncode == 0 else None
+
+    def remote_has_ref(ref: str) -> bool:
+        if not has_remote:
+            return False
+        p = git(root, "ls-remote", "--exit-code", "origin", ref)
+        return p.returncode == 0
+
+    # -------- detect an in-flight (half-completed) release --------
+    head = git(root, "rev-parse", "HEAD").stdout.strip()
+    head_msg = git(root, "log", "-1", "--pretty=%s").stdout.strip()
+    pending_ver: str | None = None
+    m = re.match(r"^chore\(release\):\s*v?(\d+\.\d+\.\d+)$", head_msg)
+    if m:
+        pending_ver = m.group(1)
+    else:
+        lt = latest_tag(root)
+        if lt and local_tag_sha(lt) == head:
+            pending_ver = lt[1:] if lt.startswith("v") else lt
+    if not pending_ver:
+        pv = primary_version(root)
+        lt = latest_tag(root)
+        if pv and lt:
+            try:
+                if parse_semver(pv) > parse_semver(lt):
+                    pending_ver = pv
+            except TypeError:
+                pass
+    recovering = pending_ver is not None
+    tag_name = f"v{pending_ver}" if pending_ver else ""
+
+    # ---- Step 1: preflight ----
+    step("Preflight")
+    if not has_remote:
+        warn("No git remote configured - commit + tag will be local only (no push / no verification).")
+    dirty = working_changes(root)
+    if dirty:
+        err_console.print(f"[bold red]X Step 1 failed:[/] working tree has {dirty} change(s):")
+        for l in git(root, "status", "--porcelain").stdout.splitlines()[:10]:
+            err_console.print(f"  [red]{l}[/]")
+        err_console.print("[yellow]Fix: commit everything first (try `autosys commit`).[/]")
+        sys.exit(1)
+    uname = git(root, "config", "user.name").stdout.strip()
+    uemail = git(root, "config", "user.email").stdout.strip()
+    if not (uname and uemail):
+        err_console.print("[bold red]X Step 1 failed:[/] git identity not set")
+        err_console.print("[yellow]Fix: git config user.name 'Your Name' && git config user.email 'you@x.com'[/]")
+        sys.exit(1)
+    step_ok(f"clean tree | {uname} <{uemail}> | branch {current_branch(root)}"
+            + (f" | remote {repo[0]}/{repo[1]}" if has_remote else ""))
+
+    # ---- Step 2: tests ----
+    step("Tests")
     test_cmd = None
     if (root / "pyproject.toml").exists() or (root / "pytest.ini").exists() or (root / "tox.ini").exists():
         test_cmd = [sys.executable, "-m", "pytest", "-q"]
     elif (root / "package.json").exists():
-        test_cmd = ["npm", "test", "--silent"]
+        try:
+            scripts = json.loads((root / "package.json").read_text(encoding="utf-8")).get("scripts", {})
+            if scripts.get("test"):
+                test_cmd = ["npm", "test", "--silent"]
+        except Exception:
+            pass
     elif (root / "Makefile").exists():
         test_cmd = ["make", "test"]
-    if test_cmd:
-        if yes or confirm("Run tests before releasing?", default=True):
-            info(f"Running: {' '.join(test_cmd)}")
-            p = subprocess.run(test_cmd, cwd=str(root), capture_output=True, text=True, timeout=600)
-            if p.returncode != 0:
-                err_console.print(f"[bold red]Tests failed:[/] {(p.stdout or p.stderr)[-400:]}")
-                fail("Tests must pass before releasing.")
-            ok("Tests passed.")
-
-    # 2. version
-    vfiles = detect_version_files(root)
-    current = primary_version(root) or latest_tag(root) or "0.1.0"
-    parsed = parse_semver(current) or (0, 1, 0)
-    kinds = ["patch", "minor", "major"]
-    if yes:
-        bump = "patch"
+    if recovering:
+        step_ok(f"skipped - release v{pending_ver} already passed this step in a previous run (resume mode)")
+    elif not test_cmd:
+        warn("No test framework detected - skipping tests. Add pytest / a `test` script to be safe.")
     else:
-        picked = pick_from(kinds, f"Bump kind (current {current}):")
-        bump = picked or "patch"
-    new_ver = bump_semver(parsed, bump)
-    for f in vfiles:
-        if f["version"] != new_ver:
-            set_version(root, f, new_ver)
-            ok(f"  {f['path']} → {new_ver}")
-
-    # 3. changelog
-    tag = latest_tag(root)
-    content = build_changelog(root, tag)
-    if yes or confirm("Write CHANGELOG.md?", default=True):
-        write_changelog(root, content)
-        ok("CHANGELOG.md updated.")
-
-    # 4. commit + tag + push
-    msg = f"chore(release): {new_ver}"
-    git(root, "add", "-A")
-    p = git(root, "commit", "-m", msg)
-    if p.returncode != 0:
-        err_console.print(f"[bold red]Release commit failed:[/] {p.stderr.strip()}")
-        sys.exit(1)
-    ok(f"Committed release [bold]{new_ver}[/]")
-    tag_name = f"v{new_ver}"
-    if git(root, "tag", tag_name).returncode != 0:
-        warn(f"Tag {tag_name} already exists — reusing it (verify it points at this release).")
-    else:
-        ok(f"Tagged [bold]{tag_name}[/]")
-    if yes or confirm("Push branch + tag to origin?", default=True):
-        p = git(root, "push", "--follow-tags")
+        run_cmd = (["cmd", "/c"] if os.name == "nt" and test_cmd[0] in ("npm", "npx") else []) + test_cmd
+        info(f"Running: {' '.join(run_cmd)}")
+        try:
+            p = subprocess.run(run_cmd, cwd=str(root), capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            fail("Tests timed out after 600s - run them manually to see where they hang.")
+        except FileNotFoundError:
+            fail(f"Test runner not found: {test_cmd[0]} - install it first.")
         if p.returncode != 0:
-            err_console.print(f"[bold red]Push failed:[/] {p.stderr.strip()}")
-            err_console.print("[yellow]Run `git push --follow-tags` manually.[/]")
+            err_console.print(f"[bold red]X Step 2 failed:[/] tests exited with code {p.returncode}")
+            tail = (p.stdout or p.stderr or "").strip()[-400:]
+            if tail:
+                err_console.print(f"  [red]{tail}[/]")
+            err_console.print("[yellow]Fix: run the failing tests, fix them, commit, and rerun `autosys finish`.[/]")
             sys.exit(1)
-        ok("Pushed to origin.")
+        step_ok("all tests passed")
 
-    # 5. GitHub release
+    # ---- Step 3: version ----
+    step("Version")
+    vfiles = detect_version_files(root)
+    if recovering:
+        new_ver = pending_ver
+        step_ok(f"resuming release at v{new_ver}")
+        for f in vfiles:
+            if f["version"] != new_ver:
+                set_version(root, f, new_ver)
+                ok(f"  healed {f['path']} -> {new_ver}")
+    else:
+        current = primary_version(root) or latest_tag(root) or "0.1.0"
+        parsed = parse_semver(current) or (0, 1, 0)
+        kinds = ["patch", "minor", "major"]
+        if yes:
+            bump = "patch"
+        else:
+            picked = pick_from(kinds, f"Bump kind (current {current}):")
+            bump = picked or "patch"
+        new_ver = bump_semver(parsed, bump)
+        tag_name = f"v{new_ver}"
+        if local_tag_sha(tag_name):
+            err_console.print(f"[bold red]X Step 3 failed:[/] tag {tag_name} already exists locally "
+                              f"(at {local_tag_sha(tag_name)[:8]})")
+            err_console.print(f"[yellow]Fix: pick a higher bump, or delete the tag if it was a mistake: git tag -d {tag_name}[/]")
+            sys.exit(1)
+        if remote_has_ref(f"refs/tags/{tag_name}"):
+            err_console.print(f"[bold red]X Step 3 failed:[/] tag {tag_name} already exists on origin - "
+                              "a release for this version is already done")
+            err_console.print("[yellow]Fix: use a higher version bump, or delete the remote tag first if it was never released.[/]")
+            sys.exit(1)
+        for f in vfiles:
+            if f["version"] != new_ver:
+                set_version(root, f, new_ver)
+                ok(f"  {f['path']} -> {new_ver}")
+    step_ok(f"version set to {new_ver}")
+
+    # ---- Step 4: changelog ----
+    step("Changelog")
+    if recovering:
+        content = f"Release v{new_ver} - see CHANGELOG.md for details."
+        step_ok("already written in the previous run")
+    else:
+        since = latest_tag(root)
+        content = build_changelog(root, since)
+        if yes or confirm("Write CHANGELOG.md?", default=True):
+            write_changelog(root, content)
+            step_ok("CHANGELOG.md updated")
+        else:
+            step_ok("skipped (declined)")
+
+    # ---- Step 5: commit + tag + push ----
+    step("Commit + tag + push")
+    if recovering:
+        if not local_tag_sha(tag_name):
+            p = git(root, "tag", tag_name)
+            if p.returncode != 0:
+                step_fail("5", p, "tag creation failed - inspect the error above")
+            step_ok(f"tag {tag_name} re-created at HEAD")
+        else:
+            step_ok(f"tag {tag_name} already exists locally - reusing it")
+    else:
+        msg = f"chore(release): {new_ver}"
+        git(root, "add", "-A")
+        p = git(root, "commit", "-m", msg)
+        if p.returncode != 0:
+            step_fail("5", p, "release commit failed (often a pre-commit hook) - fix it and rerun `autosys finish`")
+        step_ok(f"committed release {new_ver}")
+        p = git(root, "tag", tag_name)
+        if p.returncode != 0:
+            if local_tag_sha(tag_name):
+                warn(f"Tag {tag_name} already exists - reusing it.")
+            else:
+                step_fail("5", p, "tag creation failed - inspect the error above")
+        else:
+            step_ok(f"tagged {tag_name}")
+    if has_remote:
+        p = git(root, "push", "--follow-tags", "origin", current_branch(root))
+        if p.returncode != 0:
+            err_console.print(f"[bold red]X Step 5 failed:[/] push exited with code {p.returncode}")
+            tail = (p.stderr or "").strip()[-600:]
+            if tail:
+                err_console.print(f"  [red]{tail}[/]")
+            err_console.print(f"[yellow]Fix: the release commit + tag {tag_name} are safe locally. "
+                              f"Rerun `autosys finish` to resume, or push manually: "
+                              f"git push --follow-tags origin {current_branch(root)}[/]")
+            sys.exit(1)
+        step_ok("branch + tag pushed to origin")
+    else:
+        warn("No remote - skipped push (commit + tag are local).")
+
+    # ---- Step 6: verification + GitHub release ----
+    step("Verification + GitHub release")
+    if not has_remote:
+        step_ok(f"verified locally: commit {head[:8]} + tag {tag_name}")
+        console.print(Panel(f"[green]Release complete (local only) - v{new_ver}[/]", box=box.ROUNDED))
+        return
+
+    branch = current_branch(root)
+    rb = git(root, "ls-remote", "origin", f"refs/heads/{branch}").stdout.strip().split()
+    if rb and rb[0] == head:
+        step_ok(f"verified: origin/{branch} == {head[:8]}")
+    else:
+        err_console.print(f"[bold red]X Step 6 failed:[/] origin/{branch} is "
+                          f"{rb[0][:8] if rb else 'missing'}, expected {head[:8]}")
+        err_console.print(f"[yellow]Fix: git push origin {branch}[/]")
+        sys.exit(1)
+
+    lt_sha = local_tag_sha(tag_name) or ""
+    rt = git(root, "ls-remote", "origin", f"refs/tags/{tag_name}").stdout.strip().split()
+    if rt and rt[0] == lt_sha:
+        step_ok(f"verified: origin tag {tag_name} == {lt_sha[:8]}")
+    else:
+        err_console.print(f"[bold red]X Step 6 failed:[/] tag {tag_name} not on origin "
+                          f"(local {lt_sha[:8] or 'missing'})")
+        err_console.print(f"[yellow]Fix: git push origin {tag_name}[/]")
+        sys.exit(1)
+
     if repo and has_auth():
-        if yes or confirm("Create GitHub release?", default=True):
+        api = GitHubAPI()
+        full = f"{repo[0]}/{repo[1]}"
+        existing = None
+        try:
+            existing = api.get(f"/repos/{full}/releases/tags/{tag_name}")
+        except Exception:
+            existing = None
+        if existing and existing.get("id"):
+            step_ok(f"GitHub release already exists: {existing.get('html_url', full)} - nothing to create")
+        else:
             try:
-                api = GitHubAPI()
-                draft = True
-                rel = api.create_release(f"{repo[0]}/{repo[1]}", tag_name, name=f"v{new_ver}", body=content[:4000], draft=draft)
-                console.print(f"[green]✓ GitHub release created[/] [cyan]{rel.get('html_url', '')}[/] (draft)")
+                rel = api.create_release(full, tag_name, name=f"v{new_ver}",
+                                         body=content[:4000], draft=True)
+                step_ok(f"GitHub release created: {rel.get('html_url', '')} (draft)")
             except Exception as e:
-                err_console.print(f"[bold red]GitHub release failed:[/] {e}")
-                err_console.print("[yellow]You can publish manually on the repo's Releases page.[/]")
+                err_console.print(f"[bold red]X Step 6 failed:[/] GitHub release creation: {e}")
+                err_console.print(f"[yellow]Fix: rerun `autosys finish` to resume, "
+                                  f"or publish manually on {full}/releases[/]")
+                sys.exit(1)
     elif repo:
-        warn("Not logged in — skipped GitHub release. Run `autosys login` first.")
-    ok("Release pipeline complete — 🚀")
+        warn("Not logged in - GitHub release skipped. Run `autosys login` first.")
 
+    console.print(Panel(f"[green]Release complete - pushed & verified: v{new_ver} "
+                        f"on origin/{branch} + tag {tag_name}[/]", box=box.ROUNDED))
 
-# --------------------------------------------------------------------------
-# Repos browsing / clone / create / release
-# --------------------------------------------------------------------------
 
 def cmd_repos(yes: bool = False) -> None:
     if not has_auth():
