@@ -200,12 +200,16 @@ def info(msg: str):
     console.print(f"[cyan]{msg}[/]")
 
 
-def git(root: Path | None, *args: str) -> subprocess.CompletedProcess:
+def git(root: Path | None, *args: str, timeout: int = 300) -> subprocess.CompletedProcess:
     cmd = ["git"]
     if root is not None:
         cmd += ["-C", str(root)]
     cmd += list(args)
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(cmd, 124, "", f"git timed out after {timeout}s")
 
 
 def is_git_repo(root: Path) -> bool:
@@ -750,9 +754,16 @@ def set_version(root: Path, entry: dict, new_version: str) -> None:
         text = re.sub(r"^(\[package\][\s\S]*?^version\s*=\s*\")[^\"]+(\")",
                       lambda m: m.group(1) + new_version + m.group(2), text, count=1, flags=re.M)
         path.write_text(text, encoding="utf-8")
-    elif entry["kind"] in ("setup.py", "__init__.py"):
-        text = re.sub(r"(version\s*=\s*[\"'])[^\"']+([\"'])",
+    elif entry["kind"] == "__init__.py":
+        text = re.sub(r"(__version__\s*=\s*[\"'])[^\"']+([\"'])",
                       lambda m: m.group(1) + new_version + m.group(2), text, count=1)
+        path.write_text(text, encoding="utf-8")
+    elif entry["kind"] == "setup.py":
+        text, n = re.subn(r"(?m)^(\s*version\s*=\s*[\"'])[^\"']+([\"'])",
+                          lambda m: m.group(1) + new_version + m.group(2), text, count=1)
+        if n == 0:  # fallback: inline `version="x"` (e.g. single-line setup(...))
+            text = re.sub(r"(version\s*=\s*[\"'])[^\"']+([\"'])",
+                          lambda m: m.group(1) + new_version + m.group(2), text, count=1)
         path.write_text(text, encoding="utf-8")
     elif entry["kind"] == "setup.cfg":
         text = re.sub(r"(?m)^(version\s*=\s*)[^\s]+",
@@ -1078,8 +1089,9 @@ def working_changes(root: Path) -> int:
     return len([l for l in p.stdout.splitlines() if l.strip()])
 
 
-def track_changes(types: set[str], root: Path) -> list[str]:
-    p = git(root, "diff", "--name-only", "--cached")
+def unstaged_files(root: Path) -> list[str]:
+    """Files with working-tree changes (modified/deleted but NOT staged)."""
+    p = git(root, "diff", "--name-only")
     return [l for l in p.stdout.splitlines() if l.strip()]
 
 
@@ -1360,9 +1372,12 @@ def cmd_drift(yes: bool = False) -> None:
         info(f"  {v}: {', '.join(files) if files else 'git tag / README'}")
     if yes or confirm("Align all versions to one value?", default=True):
         primary = versions.get("package.json") or versions.get("pyproject.toml") or tag or sorted(unique)[0]
-        target = primary if yes else ask("Which version should everything be?", default=primary)
+        target = _norm(primary if yes else ask("Which version should everything be?", default=primary))
+        if not target:
+            warn("No target version — aborting.")
+            return
         for f in vfiles:
-            if f["version"] != target:
+            if _norm(f["version"]) != target:
                 set_version(root, f, target)
                 ok(f"  {f['path']} → {target}")
         if tag:
@@ -1581,14 +1596,19 @@ def build_changelog(root: Path, since_tag: str | None) -> str:
 def write_changelog(root: Path, content: str) -> None:
     path = root / "CHANGELOG.md"
     header = "# Changelog\n\nAll notable changes to this project.\n\n"
-    body = content if content.strip() else "No changes yet.\n"
-    if path.exists():
-        existing = path.read_text(encoding="utf-8", errors="replace")
-        if header in existing:
-            new_existing = existing.replace(header, header + body, 1)
-            path.write_text(new_existing, encoding="utf-8")
-            return
-    path.write_text(header + body, encoding="utf-8")
+    body = content.rstrip() + "\n" if content.strip() else "No changes yet.\n"
+    existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+    if not existing.strip():
+        path.write_text(header + body, encoding="utf-8")
+        return
+    if header in existing:
+        # Insert new entries right under the header, keeping the rest intact.
+        new_existing = existing.replace(header, header + body, 1)
+    else:
+        # Preserve pre-existing content (e.g. custom intro) below the new entries.
+        sep = "" if existing.endswith("\n") else "\n"
+        new_existing = header + body + sep + existing
+    path.write_text(new_existing, encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -1634,7 +1654,7 @@ def cmd_commit(yes: bool = False, push: bool | None = None, tag_ver: str | None 
     mem = load_project_memory(root)
 
     untracked = untracked_files(root)
-    modified = track_changes({"M", "D"}, root)
+    modified = unstaged_files(root)
     staged = git(root, "diff", "--name-only", "--cached").stdout.splitlines()
     candidates = sorted(set(untracked + modified + staged))
     if not candidates:
@@ -1643,7 +1663,7 @@ def cmd_commit(yes: bool = False, push: bool | None = None, tag_ver: str | None 
 
     console.print(Panel(f"[bold cyan]Commit wizard[/] — [bold]{mem.get('name', root.name)}[/]", box=box.ROUNDED))
     if len(candidates) > 1 and not yes:
-        selected = pick_from(candidates, "Select files to stage (or Enter to take all):")
+        selected = pick_from(candidates, "Select a file to stage (↑/↓ move, Enter pick):")
         if selected is None:
             warn("Aborted.")
             return
@@ -1887,8 +1907,10 @@ def cmd_finish(yes: bool = False) -> None:
         sys.exit(1)
     ok(f"Committed release [bold]{new_ver}[/]")
     tag_name = f"v{new_ver}"
-    git(root, "tag", tag_name)
-    ok(f"Tagged [bold]{tag_name}[/]")
+    if git(root, "tag", tag_name).returncode != 0:
+        warn(f"Tag {tag_name} already exists — reusing it (verify it points at this release).")
+    else:
+        ok(f"Tagged [bold]{tag_name}[/]")
     if yes or confirm("Push branch + tag to origin?", default=True):
         p = git(root, "push", "--follow-tags")
         if p.returncode != 0:
@@ -2069,9 +2091,7 @@ def interactive() -> None:
             warn("Bye!")
             return
         cmd = choice.split(" — ")[0].replace("[bold]", "").replace("[/]", "").strip()
-        if cmd in ("checkpoints", "logout"):
-            pass
-        elif cmd in ("commit", "checkpoint", "checkpoints", "restore"):
+        if cmd in ("commit", "checkpoint", "checkpoints", "restore"):
             if not root:
                 fail("Not inside a git repository.")
         if cmd == "commit":

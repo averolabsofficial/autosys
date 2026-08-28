@@ -205,3 +205,42 @@ def test_drift_yes_aligns_to_primary_without_prompt(repo):
     assert pp and pj, "version fields missing after drift -y"
     assert pp.group(1) == "1.2.4", "drift -y did not align to primary (package.json)"
     assert pj.group(1) == "1.2.4", "drift -y changed the primary version"
+
+
+
+# --------------------------------------------------------------------------
+# Bugfix regression tests (2.0.3 dev)
+# --------------------------------------------------------------------------
+
+def test_unstaged_files_detected(repo):
+    (repo / "hello.txt").write_text("hello v2\n", encoding="utf-8")
+    assert "hello.txt" in autosys.unstaged_files(repo)
+
+
+def test_changelog_preserves_existing_when_header_differs(repo):
+    (repo / "CHANGELOG.md").write_text(
+        "# Changelog\n"
+        "\n"
+        "All notable changes to **App** are documented here.\n"
+        "\n"
+        "### 1.0.0\n"
+        "- old\n",
+        encoding="utf-8")
+    autosys.write_changelog(repo, "- new\n")
+    text = (repo / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert "**App**" in text
+    assert "- old" in text
+    assert "- new" in text
+
+
+def test_set_version_targets_version_in_init(repo):
+    (repo / "pkg").mkdir(exist_ok=True)
+    (repo / "pkg" / "__init__.py").write_text(
+        "VERSION_PREFIX = '2024.07'\n__version__ = '1.0.0'\n",
+        encoding="utf-8")
+    autosys.set_version(repo, {"path": "pkg/__init__.py",
+                               "kind": "__init__.py",
+                               "version": "1.0.0"}, "2.0.0")
+    text = (repo / "pkg" / "__init__.py").read_text(encoding="utf-8")
+    assert "__version__ = '2.0.0'" in text
+    assert "2024.07" in text
